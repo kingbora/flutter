@@ -9,14 +9,17 @@ import '../rendering/mock_canvas.dart';
 
 void main() {
   testWidgets('Scrollbar never goes away until finger lift', (WidgetTester tester) async {
-    await tester.pumpWidget(new Directionality(
-      textDirection: TextDirection.ltr,
-      child: new CupertinoScrollbar(
-        child: new SingleChildScrollView(
-          child: const SizedBox(width: 4000.0, height: 4000.0),
+    await tester.pumpWidget(
+      const Directionality(
+        textDirection: TextDirection.ltr,
+        child: MediaQuery(
+          data: MediaQueryData(),
+          child: CupertinoScrollbar(
+            child: SingleChildScrollView(child: SizedBox(width: 4000.0, height: 4000.0)),
+          ),
         ),
       ),
-    ));
+    );
     final TestGesture gesture = await tester.startGesture(tester.getCenter(find.byType(SingleChildScrollView)));
     await gesture.moveBy(const Offset(0.0, -10.0));
     await tester.pump();

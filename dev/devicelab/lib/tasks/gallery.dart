@@ -13,7 +13,7 @@ import '../framework/ios.dart';
 import '../framework/utils.dart';
 
 TaskFunction createGalleryTransitionTest({ bool semanticsEnabled = false }) {
-  return new GalleryTransitionTest(semanticsEnabled: semanticsEnabled);
+  return GalleryTransitionTest(semanticsEnabled: semanticsEnabled);
 }
 
 class GalleryTransitionTest {
@@ -28,7 +28,7 @@ class GalleryTransitionTest {
     final String deviceId = device.deviceId;
     final Directory galleryDirectory =
         dir('${flutterDirectory.path}/examples/flutter_gallery');
-    await inDirectory(galleryDirectory, () async {
+    await inDirectory<void>(galleryDirectory, () async {
       await flutter('packages', options: <String>['get']);
 
       if (deviceOperatingSystem == DeviceOperatingSystem.ios)
@@ -64,16 +64,19 @@ class GalleryTransitionTest {
     final Map<String, dynamic> data = <String, dynamic>{
       'transitions': transitions,
       'missed_transition_count': _countMissedTransitions(transitions),
+      ...summary,
     };
-    data.addAll(summary);
 
-    return new TaskResult.success(data, benchmarkScoreKeys: <String>[
+    return TaskResult.success(data, benchmarkScoreKeys: <String>[
       'missed_transition_count',
       'average_frame_build_time_millis',
       'worst_frame_build_time_millis',
       'missed_frame_build_budget_count',
+      '90th_percentile_frame_build_time_millis',
+      '99th_percentile_frame_build_time_millis',
       'average_frame_rasterizer_time_millis',
       'worst_frame_rasterizer_time_millis',
+      'missed_frame_rasterizer_budget_count',
       '90th_percentile_frame_rasterizer_time_millis',
       '99th_percentile_frame_rasterizer_time_millis',
     ]);

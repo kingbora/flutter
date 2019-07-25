@@ -40,10 +40,15 @@ class FormatCommand extends FlutterCommand {
   final String description = 'Format one or more dart files.';
 
   @override
+  Future<Set<DevelopmentArtifact>> get requiredArtifacts async => const <DevelopmentArtifact>{
+    DevelopmentArtifact.universal,
+  };
+
+  @override
   String get invocation => '${runner.executableName} $name <one or more paths>';
 
   @override
-  Future<Null> runCommand() async {
+  Future<FlutterCommandResult> runCommand() async {
     if (argResults.rest.isEmpty) {
       throwToolExit(
         'No files specified to be formatted.\n'
@@ -56,26 +61,19 @@ class FormatCommand extends FlutterCommand {
     }
 
     final String dartfmt = sdkBinaryName('dartfmt');
-    final List<String> command = <String>[dartfmt];
-
-    if (argResults['dry-run']) {
-      command.add('-n');
-    }
-    if (argResults['machine']) {
-      command.add('-m');
-    }
-    if (!argResults['dry-run'] && !argResults['machine']) {
-      command.add('-w');
-    }
-
-    if (argResults['set-exit-if-changed']) {
-      command.add('--set-exit-if-changed');
-    }
-
-    command..addAll(argResults.rest);
+    final List<String> command = <String>[
+      dartfmt,
+      if (argResults['dry-run']) '-n',
+      if (argResults['machine']) '-m',
+      if (!argResults['dry-run'] && !argResults['machine']) '-w',
+      if (argResults['set-exit-if-changed']) '--set-exit-if-changed',
+      ...argResults.rest,
+    ];
 
     final int result = await runCommandAndStreamOutput(command);
     if (result != 0)
       throwToolExit('Formatting failed: $result', exitCode: result);
+
+    return null;
   }
 }

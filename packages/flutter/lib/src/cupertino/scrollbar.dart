@@ -7,14 +7,22 @@ import 'dart:async';
 import 'package:flutter/widgets.dart';
 
 // All values eyeballed.
-const Color _kScrollbarColor = const Color(0x99777777);
+const Color _kScrollbarColor = Color(0x99777777);
+const double _kScrollbarMinLength = 36.0;
+const double _kScrollbarMinOverscrollLength = 8.0;
+const Radius _kScrollbarRadius = Radius.circular(1.25);
+const Duration _kScrollbarTimeToFade = Duration(milliseconds: 50);
+const Duration _kScrollbarFadeDuration = Duration(milliseconds: 250);
+
+// These values are measured using screenshots from an iPhone XR 12.1 simulator.
 const double _kScrollbarThickness = 2.5;
-const double _kScrollbarMainAxisMargin = 4.0;
-const double _kScrollbarCrossAxisMargin = 2.5;
-const double _kScrollbarMinLength = 4.0;
-const Radius _kScrollbarRadius = const Radius.circular(1.25);
-const Duration _kScrollbarTimeToFade = const Duration(milliseconds: 50);
-const Duration _kScrollbarFadeDuration = const Duration(milliseconds: 250);
+// This is the amount of space from the top of a vertical scrollbar to the
+// top edge of the scrollable, measured when the vertical scrollbar overscrolls
+// to the top.
+// TODO(LongCatIsLooong): fix https://github.com/flutter/flutter/issues/32175
+const double _kScrollbarMainAxisMargin = 3.0;
+const double _kScrollbarCrossAxisMargin = 3.0;
+
 
 /// An iOS style scrollbar.
 ///
@@ -47,7 +55,7 @@ class CupertinoScrollbar extends StatefulWidget {
   final Widget child;
 
   @override
-  _CupertinoScrollbarState createState() => new _CupertinoScrollbarState();
+  _CupertinoScrollbarState createState() => _CupertinoScrollbarState();
 }
 
 class _CupertinoScrollbarState extends State<CupertinoScrollbar> with TickerProviderStateMixin {
@@ -61,13 +69,13 @@ class _CupertinoScrollbarState extends State<CupertinoScrollbar> with TickerProv
   @override
   void initState() {
     super.initState();
-    _fadeoutAnimationController = new AnimationController(
+    _fadeoutAnimationController = AnimationController(
       vsync: this,
       duration: _kScrollbarFadeDuration,
     );
-    _fadeoutOpacityAnimation = new CurvedAnimation(
+    _fadeoutOpacityAnimation = CurvedAnimation(
       parent: _fadeoutAnimationController,
-      curve: Curves.fastOutSlowIn
+      curve: Curves.fastOutSlowIn,
     );
   }
 
@@ -80,7 +88,7 @@ class _CupertinoScrollbarState extends State<CupertinoScrollbar> with TickerProv
 
   /// Returns a [ScrollbarPainter] visually styled like the iOS scrollbar.
   ScrollbarPainter _buildCupertinoScrollbarPainter() {
-    return new ScrollbarPainter(
+    return ScrollbarPainter(
       color: _kScrollbarColor,
       textDirection: _textDirection,
       thickness: _kScrollbarThickness,
@@ -88,11 +96,18 @@ class _CupertinoScrollbarState extends State<CupertinoScrollbar> with TickerProv
       mainAxisMargin: _kScrollbarMainAxisMargin,
       crossAxisMargin: _kScrollbarCrossAxisMargin,
       radius: _kScrollbarRadius,
+      padding: MediaQuery.of(context).padding,
       minLength: _kScrollbarMinLength,
+      minOverscrollLength: _kScrollbarMinOverscrollLength,
     );
   }
 
   bool _handleScrollNotification(ScrollNotification notification) {
+    final ScrollMetrics metrics = notification.metrics;
+    if (metrics.maxScrollExtent <= metrics.minScrollExtent) {
+      return false;
+    }
+
     if (notification is ScrollUpdateNotification ||
         notification is OverscrollNotification) {
       // Any movements always makes the scrollbar start showing up.
@@ -106,7 +121,7 @@ class _CupertinoScrollbarState extends State<CupertinoScrollbar> with TickerProv
       // On iOS, the scrollbar can only go away once the user lifted the finger.
 
       _fadeoutTimer?.cancel();
-      _fadeoutTimer = new Timer(_kScrollbarTimeToFade, () {
+      _fadeoutTimer = Timer(_kScrollbarTimeToFade, () {
         _fadeoutAnimationController.reverse();
         _fadeoutTimer = null;
       });
@@ -124,12 +139,12 @@ class _CupertinoScrollbarState extends State<CupertinoScrollbar> with TickerProv
 
   @override
   Widget build(BuildContext context) {
-    return new NotificationListener<ScrollNotification>(
+    return NotificationListener<ScrollNotification>(
       onNotification: _handleScrollNotification,
-      child: new RepaintBoundary(
-        child: new CustomPaint(
+      child: RepaintBoundary(
+        child: CustomPaint(
           foregroundPainter: _painter,
-          child: new RepaintBoundary(
+          child: RepaintBoundary(
             child: widget.child,
           ),
         ),

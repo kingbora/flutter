@@ -11,6 +11,7 @@ import '../android/android_workflow.dart';
 import '../base/file_system.dart';
 import '../base/io.dart';
 import '../base/process_manager.dart';
+import '../device.dart';
 import '../emulator.dart';
 import 'android_sdk.dart';
 
@@ -27,18 +28,23 @@ class AndroidEmulators extends EmulatorDiscovery {
 
 class AndroidEmulator extends Emulator {
   AndroidEmulator(String id, [this._properties])
-      : super(id, _properties != null && _properties.isNotEmpty);
+    : super(id, _properties != null && _properties.isNotEmpty);
 
-  Map<String, String> _properties;
+  final Map<String, String> _properties;
 
+  // Android Studio uses the ID with underscores replaced with spaces
+  // for the name if displayname is not set so we do the same.
   @override
-  String get name => _prop('hw.device.name');
+  String get name => _prop('avd.ini.displayname') ?? id.replaceAll('_', ' ').trim();
 
   @override
   String get manufacturer => _prop('hw.device.manufacturer');
 
   @override
-  String get label => _properties['avd.ini.displayname'];
+  Category get category => Category.mobile;
+
+  @override
+  PlatformType get platformType => PlatformType.android;
 
   String _prop(String name) => _properties != null ? _properties[name] : null;
 
@@ -51,12 +57,13 @@ class AndroidEmulator extends Emulator {
                 throw '${runResult.stdout}\n${runResult.stderr}'.trimRight();
               }
             });
-    // emulator continues running on a successful launch so if we
-    // haven't quit within 3 seconds we assume that's a success and just
-    // return.
+    // The emulator continues running on a successful launch, so if it hasn't
+    // quit within 3 seconds we assume that's a success and just return. This
+    // means that on a slow machine, a failure that takes more than three
+    // seconds won't be recognized as such... :-/
     return Future.any<void>(<Future<void>>[
       launchResult,
-      new Future<void>.delayed(const Duration(seconds: 3))
+      Future<void>.delayed(const Duration(seconds: 3)),
     ]);
   }
 }
@@ -98,13 +105,13 @@ AndroidEmulator _loadEmulatorInfo(String id) {
         if (configFile.existsSync()) {
           final Map<String, String> properties =
               parseIniLines(configFile.readAsLinesSync());
-          return new AndroidEmulator(id, properties);
+          return AndroidEmulator(id, properties);
         }
       }
     }
   }
 
-  return new AndroidEmulator(id);
+  return AndroidEmulator(id);
 }
 
 @visibleForTesting
@@ -112,13 +119,13 @@ Map<String, String> parseIniLines(List<String> contents) {
   final Map<String, String> results = <String, String>{};
 
   final Iterable<List<String>> properties = contents
-      .map((String l) => l.trim())
+      .map<String>((String l) => l.trim())
       // Strip blank lines/comments
       .where((String l) => l != '' && !l.startsWith('#'))
       // Discard anything that isn't simple name=value
       .where((String l) => l.contains('='))
       // Split into name/value
-      .map((String l) => l.split('='));
+      .map<List<String>>((String l) => l.split('='));
 
   for (List<String> property in properties) {
     results[property[0].trim()] = property[1].trim();

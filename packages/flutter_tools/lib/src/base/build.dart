@@ -6,19 +6,22 @@ import 'dart:async';
 
 import 'package:meta/meta.dart';
 
-import '../android/android_sdk.dart';
 import '../artifacts.dart';
 import '../build_info.dart';
+import '../bundle.dart';
 import '../compile.dart';
 import '../dart/package_map.dart';
 import '../globals.dart';
-import '../ios/mac.dart';
+import '../macos/xcode.dart';
+import '../project.dart';
+import '../reporting/usage.dart';
+
 import 'context.dart';
 import 'file_system.dart';
 import 'fingerprint.dart';
 import 'process.dart';
 
-GenSnapshot get genSnapshot => context[GenSnapshot];
+GenSnapshot get genSnapshot => context.get<GenSnapshot>();
 
 /// A snapshot build configuration.
 class SnapshotType {
@@ -38,21 +41,18 @@ class GenSnapshot {
 
   static String getSnapshotterPath(SnapshotType snapshotType) {
     return artifacts.getArtifactPath(
-        Artifact.genSnapshot, snapshotType.platform, snapshotType.mode);
+        Artifact.genSnapshot, platform: snapshotType.platform, mode: snapshotType.mode);
   }
 
   Future<int> run({
     @required SnapshotType snapshotType,
-    @required String packagesPath,
-    @required String depfilePath,
     IOSArch iosArch,
     Iterable<String> additionalArgs = const <String>[],
   }) {
     final List<String> args = <String>[
-      '--await_is_keyword',
       '--causal_async_stacks',
-      '--packages=$packagesPath',
-    ]..addAll(additionalArgs);
+      ...additionalArgs,
+    ];
 
     final String snapshotterPath = getSnapshotterPath(snapshotType);
 
@@ -62,77 +62,29 @@ class GenSnapshot {
     // architecture.
     if (snapshotType.platform == TargetPlatform.ios) {
       final String hostArch = iosArch == IOSArch.armv7 ? '-i386' : '-x86_64';
-      return runCommandAndStreamOutput(<String>['/usr/bin/arch', hostArch, snapshotterPath]..addAll(args));
-    }
-    return runCommandAndStreamOutput(<String>[snapshotterPath]..addAll(args));
-  }
-}
-
-/// Dart snapshot builder.
-///
-/// Builds Dart snapshots in one of three modes:
-///   * Script snapshot: architecture-independent snapshot of a Dart script
-///     and core libraries.
-///   * AOT snapshot: architecture-specific ahead-of-time compiled snapshot
-///     suitable for loading with `mmap`.
-///   * Assembly AOT snapshot: architecture-specific ahead-of-time compile to
-///     assembly suitable for compilation as a static or dynamic library.
-class ScriptSnapshotter {
-  /// Builds an architecture-independent snapshot of the specified script.
-  Future<int> build({
-    @required String mainPath,
-    @required String snapshotPath,
-    @required String depfilePath,
-    @required String packagesPath
-  }) async {
-    final SnapshotType snapshotType = new SnapshotType(null, BuildMode.debug);
-    final String vmSnapshotData = artifacts.getArtifactPath(Artifact.vmSnapshotData);
-    final String isolateSnapshotData = artifacts.getArtifactPath(Artifact.isolateSnapshotData);
-    final List<String> args = <String>[
-      '--snapshot_kind=script',
-      '--script_snapshot=$snapshotPath',
-      '--vm_snapshot_data=$vmSnapshotData',
-      '--isolate_snapshot_data=$isolateSnapshotData',
-      '--enable-mirrors=false',
-      mainPath,
-    ];
-
-    final Fingerprinter fingerprinter = new Fingerprinter(
-      fingerprintPath: '$depfilePath.fingerprint',
-      paths: <String>[
-        mainPath,
-        snapshotPath,
-        vmSnapshotData,
-        isolateSnapshotData,
-      ],
-      properties: <String, String>{
-        'buildMode': snapshotType.mode.toString(),
-        'targetPlatform': snapshotType.platform?.toString() ?? '',
-        'entryPoint': mainPath,
-      },
-      depfilePaths: <String>[depfilePath],
-    );
-    if (await fingerprinter.doesFingerprintMatch()) {
-      printTrace('Skipping script snapshot build. Fingerprints match.');
-      return 0;
+      return runCommandAndStreamOutput(<String>['/usr/bin/arch', hostArch, snapshotterPath, ...args]);
     }
 
-    // Build the snapshot.
-    final int exitCode = await genSnapshot.run(
-      snapshotType: snapshotType,
-      packagesPath: packagesPath,
-      depfilePath: depfilePath,
-      additionalArgs: args,
-    );
+    StringConverter outputFilter;
+    if (additionalArgs.contains('--strip')) {
+      // Filter out gen_snapshot's warning message about stripping debug symbols
+      // from ELF library snapshots.
+      const String kStripWarning = 'Warning: Generating ELF library without DWARF debugging information.';
+      outputFilter = (String line) => line != kStripWarning ? line : null;
+    }
 
-    if (exitCode != 0)
-      return exitCode;
-    await fingerprinter.writeFingerprint();
-    return exitCode;
+    return runCommandAndStreamOutput(<String>[snapshotterPath, ...args], mapFunction: outputFilter);
   }
 }
 
 class AOTSnapshotter {
+  AOTSnapshotter({this.reportTimings = false});
+
+  /// If true then AOTSnapshotter would report timings for individual building
+  /// steps (Dart front-end parsing and snapshot generation) in a stable
+  /// machine readable form. See [AOTSnapshotter._timedStep].
+  final bool reportTimings;
+
   /// Builds an architecture-specific ahead-of-time compiled snapshot of the specified script.
   Future<int> build({
     @required TargetPlatform platform,
@@ -140,11 +92,15 @@ class AOTSnapshotter {
     @required String mainPath,
     @required String packagesPath,
     @required String outputPath,
-    @required bool previewDart2,
-    @required bool buildSharedLibrary,
     IOSArch iosArch,
     List<String> extraGenSnapshotOptions = const <String>[],
+    @required bool bitcode,
   }) async {
+    if (bitcode && platform != TargetPlatform.ios) {
+      printError('Bitcode is only supported for iOS.');
+      return 1;
+    }
+
     if (!_isValidAotPlatform(platform, buildMode)) {
       printError('${getNameForTargetPlatform(platform)} does not support AOT compilation.');
       return 1;
@@ -152,24 +108,7 @@ class AOTSnapshotter {
     // TODO(cbracken): replace IOSArch with TargetPlatform.ios_{armv7,arm64}.
     assert(platform != TargetPlatform.ios || iosArch != null);
 
-    // buildSharedLibrary is ignored for iOS builds.
-    if (platform == TargetPlatform.ios)
-      buildSharedLibrary = false;
-
-    if (buildSharedLibrary && androidSdk.ndk == null) {
-      final String explanation = AndroidNdk.explainMissingNdk(androidSdk.directory);
-      printError(
-        'Could not find NDK in Android SDK at ${androidSdk.directory}:\n'
-        '\n'
-        '  $explanation\n'
-        '\n'
-        'Unable to build with --build-shared-library\n'
-        'To install the NDK, see instructions at https://developer.android.com/ndk/guides/'
-      );
-      return 1;
-    }
-
-    final PackageMap packageMap = new PackageMap(packagesPath);
+    final PackageMap packageMap = PackageMap(packagesPath);
     final String packageMapError = packageMap.checkValid();
     if (packageMapError != null) {
       printError(packageMapError);
@@ -182,57 +121,35 @@ class AOTSnapshotter {
     final String skyEnginePkg = _getPackagePath(packageMap, 'sky_engine');
     final String uiPath = fs.path.join(skyEnginePkg, 'lib', 'ui', 'ui.dart');
     final String vmServicePath = fs.path.join(skyEnginePkg, 'sdk_ext', 'vmservice_io.dart');
-    final String vmEntryPoints = artifacts.getArtifactPath(Artifact.dartVmEntryPointsTxt, platform, buildMode);
-    final String ioEntryPoints = artifacts.getArtifactPath(Artifact.dartIoEntriesTxt, platform, buildMode);
 
-    final List<String> inputPaths = <String>[uiPath, vmServicePath, vmEntryPoints, ioEntryPoints, mainPath];
-    final Set<String> outputPaths = new Set<String>();
-
-    final String depfilePath = fs.path.join(outputDir.path, 'snapshot.d');
+    final List<String> inputPaths = <String>[uiPath, vmServicePath, mainPath];
+    final Set<String> outputPaths = <String>{};
     final List<String> genSnapshotArgs = <String>[
-      '--url_mapping=dart:ui,$uiPath',
-      '--url_mapping=dart:vmservice_io,$vmServicePath',
-      '--embedder_entry_points_manifest=$vmEntryPoints',
-      '--embedder_entry_points_manifest=$ioEntryPoints',
+      '--deterministic',
     ];
-    if (previewDart2) {
-      genSnapshotArgs.addAll(<String>[
-        '--reify-generic-functions',
-        '--strong',
-        '--sync-async',
-      ]);
-    }
     if (extraGenSnapshotOptions != null && extraGenSnapshotOptions.isNotEmpty) {
       printTrace('Extra gen_snapshot options: $extraGenSnapshotOptions');
       genSnapshotArgs.addAll(extraGenSnapshotOptions);
     }
 
     final String assembly = fs.path.join(outputDir.path, 'snapshot_assembly.S');
-    if (buildSharedLibrary || platform == TargetPlatform.ios) {
+    if (platform == TargetPlatform.ios) {
       // Assembly AOT snapshot.
       outputPaths.add(assembly);
       genSnapshotArgs.add('--snapshot_kind=app-aot-assembly');
       genSnapshotArgs.add('--assembly=$assembly');
     } else {
-      // Blob AOT snapshot.
-      final String vmSnapshotData = fs.path.join(outputDir.path, 'vm_snapshot_data');
-      final String isolateSnapshotData = fs.path.join(outputDir.path, 'isolate_snapshot_data');
-      final String vmSnapshotInstructions = fs.path.join(outputDir.path, 'vm_snapshot_instr');
-      final String isolateSnapshotInstructions = fs.path.join(outputDir.path, 'isolate_snapshot_instr');
-      outputPaths.addAll(<String>[vmSnapshotData, isolateSnapshotData, vmSnapshotInstructions, isolateSnapshotInstructions]);
-      genSnapshotArgs.addAll(<String>[
-        '--snapshot_kind=app-aot-blobs',
-        '--vm_snapshot_data=$vmSnapshotData',
-        '--isolate_snapshot_data=$isolateSnapshotData',
-        '--vm_snapshot_instructions=$vmSnapshotInstructions',
-        '--isolate_snapshot_instructions=$isolateSnapshotInstructions',
-      ]);
+      final String aotSharedLibrary = fs.path.join(outputDir.path, 'app.so');
+      outputPaths.add(aotSharedLibrary);
+      genSnapshotArgs.add('--snapshot_kind=app-aot-elf');
+      genSnapshotArgs.add('--elf=$aotSharedLibrary');
+      genSnapshotArgs.add('--strip');
     }
 
     if (platform == TargetPlatform.android_arm || iosArch == IOSArch.armv7) {
       // Use softfp for Android armv7 devices.
-      // Note that this is the default for armv7 iOS builds, but harmless to set.
-      // TODO(cbracken) eliminate this when we fix https://github.com/flutter/flutter/issues/17489
+      // This is the default for armv7 iOS builds, but harmless to set.
+      // TODO(cbracken): eliminate this when we fix https://github.com/flutter/flutter/issues/17489
       genSnapshotArgs.add('--no-sim-use-hardfp');
 
       // Not supported by the Pixel in 32-bit mode.
@@ -248,59 +165,51 @@ class AOTSnapshotter {
       return 1;
     }
 
-    // If inputs and outputs have not changed since last run, skip the build.
-    final Fingerprinter fingerprinter = new Fingerprinter(
-      fingerprintPath: '$depfilePath.fingerprint',
-      paths: <String>[mainPath]..addAll(inputPaths)..addAll(outputPaths),
-      properties: <String, String>{
-        'buildMode': buildMode.toString(),
-        'targetPlatform': platform.toString(),
-        'entryPoint': mainPath,
-        'dart2': previewDart2.toString(),
-        'sharedLib': buildSharedLibrary.toString(),
-        'extraGenSnapshotOptions': extraGenSnapshotOptions.join(' '),
-      },
-      depfilePaths: <String>[depfilePath],
-    );
-    if (await fingerprinter.doesFingerprintMatch()) {
-      printTrace('Skipping AOT snapshot build. Fingerprint match.');
-      return 0;
-    }
-
-    final SnapshotType snapshotType = new SnapshotType(platform, buildMode);
-    final int genSnapshotExitCode = await genSnapshot.run(
+    final SnapshotType snapshotType = SnapshotType(platform, buildMode);
+    final int genSnapshotExitCode =
+      await _timedStep('snapshot(CompileTime)', 'aot-snapshot',
+        () => genSnapshot.run(
       snapshotType: snapshotType,
-      packagesPath: packageMap.packagesPath,
-      depfilePath: depfilePath,
       additionalArgs: genSnapshotArgs,
       iosArch: iosArch,
-    );
+    ));
     if (genSnapshotExitCode != 0) {
       printError('Dart snapshot generator failed with exit code $genSnapshotExitCode');
       return genSnapshotExitCode;
     }
 
+    // TODO(dnfield): This should be removed when https://github.com/dart-lang/sdk/issues/37560
+    // is resolved.
+    // The DWARF section confuses Xcode tooling, so this strips it. Ideally,
+    // gen_snapshot would provide an argument to do this automatically.
+    if (platform == TargetPlatform.ios && bitcode) {
+      final IOSink sink = fs.file('$assembly.bitcode').openWrite();
+      for (String line in await fs.file(assembly).readAsLines()) {
+        if (line.startsWith('.section __DWARF')) {
+          break;
+        }
+        sink.writeln(line);
+      }
+      await sink.close();
+    }
+
     // Write path to gen_snapshot, since snapshots have to be re-generated when we roll
     // the Dart SDK.
     final String genSnapshotPath = GenSnapshot.getSnapshotterPath(snapshotType);
-    await outputDir.childFile('gen_snapshot.d').writeAsString('snapshot.d: $genSnapshotPath\n');
+    await outputDir.childFile('gen_snapshot.d').writeAsString('gen_snapshot.d: $genSnapshotPath\n');
 
     // On iOS, we use Xcode to compile the snapshot into a dynamic library that the
     // end-developer can link into their app.
     if (platform == TargetPlatform.ios) {
-      final RunResult result = await _buildIosFramework(iosArch: iosArch, assemblyPath: assembly, outputPath: outputDir.path);
+      final RunResult result = await _buildIosFramework(
+        iosArch: iosArch,
+        assemblyPath: bitcode ? '$assembly.bitcode' : assembly,
+        outputPath: outputDir.path,
+        bitcode: bitcode,
+      );
       if (result.exitCode != 0)
         return result.exitCode;
-    } else if (buildSharedLibrary) {
-      final RunResult result = await _buildAndroidSharedLibrary(assemblyPath: assembly, outputPath: outputDir.path);
-      if (result.exitCode != 0) {
-        printError('Failed to build AOT snapshot. Compiler terminated with exit code ${result.exitCode}');
-        return result.exitCode;
-      }
     }
-
-    // Compute and record build fingerprint.
-    await fingerprinter.writeFingerprint();
     return 0;
   }
 
@@ -310,13 +219,21 @@ class AOTSnapshotter {
     @required IOSArch iosArch,
     @required String assemblyPath,
     @required String outputPath,
+    @required bool bitcode,
   }) async {
     final String targetArch = iosArch == IOSArch.armv7 ? 'armv7' : 'arm64';
     printStatus('Building App.framework for $targetArch...');
     final List<String> commonBuildOptions = <String>['-arch', targetArch, '-miphoneos-version-min=8.0'];
 
     final String assemblyO = fs.path.join(outputPath, 'snapshot_assembly.o');
-    final RunResult compileResult = await xcode.cc(commonBuildOptions.toList()..addAll(<String>['-c', assemblyPath, '-o', assemblyO]));
+    final RunResult compileResult = await xcode.cc(<String>[
+      ...commonBuildOptions,
+      '-c',
+      assemblyPath,
+      '-o',
+      assemblyO,
+      if (bitcode) '-fembed-bitcode',
+    ]);
     if (compileResult.exitCode != 0) {
       printError('Failed to compile AOT snapshot. Compiler terminated with exit code ${compileResult.exitCode}');
       return compileResult;
@@ -325,38 +242,29 @@ class AOTSnapshotter {
     final String frameworkDir = fs.path.join(outputPath, 'App.framework');
     fs.directory(frameworkDir).createSync(recursive: true);
     final String appLib = fs.path.join(frameworkDir, 'App');
-    final List<String> linkArgs = commonBuildOptions.toList()..addAll(<String>[
-        '-dynamiclib',
-        '-Xlinker', '-rpath', '-Xlinker', '@executable_path/Frameworks',
-        '-Xlinker', '-rpath', '-Xlinker', '@loader_path/Frameworks',
-        '-install_name', '@rpath/App.framework/App',
-        '-o', appLib,
-        assemblyO,
-    ]);
+    final List<String> linkArgs = <String>[
+      ...commonBuildOptions,
+      '-dynamiclib',
+      '-Xlinker', '-rpath', '-Xlinker', '@executable_path/Frameworks',
+      '-Xlinker', '-rpath', '-Xlinker', '@loader_path/Frameworks',
+      '-install_name', '@rpath/App.framework/App',
+      if (bitcode) '-fembed-bitcode',
+      '-o', appLib,
+      assemblyO,
+    ];
     final RunResult linkResult = await xcode.clang(linkArgs);
     if (linkResult.exitCode != 0) {
       printError('Failed to link AOT snapshot. Linker terminated with exit code ${compileResult.exitCode}');
+      return linkResult;
     }
-    return linkResult;
-  }
-
-  /// Builds an Android shared library at [outputPath]/app.so from the assembly
-  /// source at [assemblyPath].
-  Future<RunResult> _buildAndroidSharedLibrary({
-    @required String assemblyPath,
-    @required String outputPath,
-  }) async {
-    // A word of warning: Instead of compiling via two steps, to a .o file and
-    // then to a .so file we use only one command. When using two commands
-    // gcc will end up putting a .eh_frame and a .debug_frame into the shared
-    // library. Without stripping .debug_frame afterwards, unwinding tools
-    // based upon libunwind use just one and ignore the contents of the other
-    // (which causes it to not look into the other section and therefore not
-    // find the correct unwinding information).
-    final String assemblySo = fs.path.join(outputPath, 'app.so');
-    return await runCheckedAsync(<String>[androidSdk.ndk.compiler]
-        ..addAll(androidSdk.ndk.compilerArgs)
-        ..addAll(<String>[ '-shared', '-nostdlib', '-o', assemblySo, assemblyPath ]));
+    final RunResult dsymResult = await xcode.dsymutil(<String>[
+      appLib,
+      '-o', fs.path.join(outputPath, 'App.framework.dSYM'),
+    ]);
+    if (dsymResult.exitCode != 0) {
+      printError('Failed to extract dSYM out of dynamic lib');
+    }
+    return dsymResult;
   }
 
   /// Compiles a Dart file to kernel.
@@ -366,34 +274,39 @@ class AOTSnapshotter {
     @required TargetPlatform platform,
     @required BuildMode buildMode,
     @required String mainPath,
+    @required String packagesPath,
     @required String outputPath,
+    @required bool trackWidgetCreation,
     List<String> extraFrontEndOptions = const <String>[],
   }) async {
+    final FlutterProject flutterProject = FlutterProject.current();
     final Directory outputDir = fs.directory(outputPath);
     outputDir.createSync(recursive: true);
 
     printTrace('Compiling Dart to kernel: $mainPath');
-    final List<String> entryPointsJsonFiles = <String>[
-      artifacts.getArtifactPath(Artifact.entryPointsJson, platform, buildMode),
-      artifacts.getArtifactPath(Artifact.entryPointsExtraJson, platform, buildMode),
-    ];
 
     if ((extraFrontEndOptions != null) && extraFrontEndOptions.isNotEmpty)
       printTrace('Extra front-end options: $extraFrontEndOptions');
 
     final String depfilePath = fs.path.join(outputPath, 'kernel_compile.d');
-    final CompilerOutput compilerOutput = await kernelCompiler.compile(
-      sdkRoot: artifacts.getArtifactPath(Artifact.flutterPatchedSdkPath),
+    final KernelCompiler kernelCompiler = await kernelCompilerFactory.create(flutterProject);
+    final CompilerOutput compilerOutput =
+      await _timedStep('frontend(CompileTime)', 'aot-kernel',
+        () => kernelCompiler.compile(
+      sdkRoot: artifacts.getArtifactPath(Artifact.flutterPatchedSdkPath, mode: buildMode),
       mainPath: mainPath,
-      outputFilePath: fs.path.join(outputPath, 'app.dill'),
+      packagesPath: packagesPath,
+      outputFilePath: getKernelPathForTransformerOptions(
+        fs.path.join(outputPath, 'app.dill'),
+        trackWidgetCreation: trackWidgetCreation,
+      ),
       depFilePath: depfilePath,
       extraFrontEndOptions: extraFrontEndOptions,
       linkPlatformKernelIn: true,
       aot: true,
-      entryPointsJsonFiles: entryPointsJsonFiles,
-      trackWidgetCreation: false,
+      trackWidgetCreation: trackWidgetCreation,
       targetProductVm: buildMode == BuildMode.release,
-    );
+    ));
 
     // Write path to frontend_server, since things need to be re-generated when that changes.
     final String frontendPath = artifacts.getArtifactPath(Artifact.frontendServerSnapshotForEngineDartSdk);
@@ -415,36 +328,55 @@ class AOTSnapshotter {
   String _getPackagePath(PackageMap packageMap, String package) {
     return fs.path.dirname(fs.path.fromUri(packageMap.map[package]));
   }
+
+  /// This method is used to measure duration of an action and emit it into
+  /// verbose output from flutter_tool for other tools (e.g. benchmark runner)
+  /// to find.
+  /// Important: external performance tracking tools expect format of this
+  /// output to be stable.
+  Future<T> _timedStep<T>(String marker, String analyticsVar, FutureOr<T> Function() action) async {
+    final Stopwatch sw = Stopwatch()..start();
+    final T value = await action();
+    if (reportTimings) {
+      printStatus('$marker: ${sw.elapsedMilliseconds} ms.');
+    }
+    flutterUsage.sendTiming('build', analyticsVar, Duration(milliseconds: sw.elapsedMilliseconds));
+    return value;
+  }
 }
 
-class CoreJITSnapshotter {
-  /// Builds a "Core JIT" VM snapshot of the specified kernel. This snapshot
-  /// includes data as well as either machine code or DBC, depending on build
-  /// configuration.
+class JITSnapshotter {
+  /// Builds a JIT VM snapshot of the specified kernel. This snapshot includes
+  /// data as well as either machine code or DBC, depending on build configuration.
   Future<int> build({
     @required TargetPlatform platform,
     @required BuildMode buildMode,
     @required String mainPath,
     @required String packagesPath,
     @required String outputPath,
+    @required String compilationTraceFilePath,
     List<String> extraGenSnapshotOptions = const <String>[],
   }) async {
-    if (!_isValidCoreJitPlatform(platform)) {
-      printError('${getNameForTargetPlatform(platform)} does not support Core JIT compilation.');
+    if (!_isValidJitPlatform(platform)) {
+      printError('${getNameForTargetPlatform(platform)} does not support JIT snapshotting.');
       return 1;
     }
 
     final Directory outputDir = fs.directory(outputPath);
     outputDir.createSync(recursive: true);
 
-    final List<String> inputPaths = <String>[mainPath];
-    final Set<String> outputPaths = new Set<String>();
+    final String engineVmSnapshotData = artifacts.getArtifactPath(Artifact.vmSnapshotData, mode: buildMode);
+    final String engineIsolateSnapshotData = artifacts.getArtifactPath(Artifact.isolateSnapshotData, mode: buildMode);
+    final String isolateSnapshotData = fs.path.join(outputDir.path, 'isolate_snapshot_data');
+    final String isolateSnapshotInstructions = fs.path.join(outputDir.path, 'isolate_snapshot_instr');
+
+    final List<String> inputPaths = <String>[
+      mainPath, compilationTraceFilePath, engineVmSnapshotData, engineIsolateSnapshotData,
+    ];
 
     final String depfilePath = fs.path.join(outputDir.path, 'snapshot.d');
     final List<String> genSnapshotArgs = <String>[
-      '--reify-generic-functions',
-      '--strong',
-      '--sync-async',
+      '--deterministic',
     ];
     if (buildMode == BuildMode.debug) {
       genSnapshotArgs.add('--enable_asserts');
@@ -454,24 +386,41 @@ class CoreJITSnapshotter {
       genSnapshotArgs.addAll(extraGenSnapshotOptions);
     }
 
-    // Blob Core JIT snapshot.
-    final String vmSnapshotData = fs.path.join(outputDir.path, 'vm_snapshot_data');
-    final String isolateSnapshotData = fs.path.join(outputDir.path, 'isolate_snapshot_data');
-    final String vmSnapshotInstructions = fs.path.join(outputDir.path, 'vm_snapshot_instr');
-    final String isolateSnapshotInstructions = fs.path.join(outputDir.path, 'isolate_snapshot_instr');
-    outputPaths.addAll(<String>[vmSnapshotData, isolateSnapshotData, vmSnapshotInstructions, isolateSnapshotInstructions]);
+    final Set<String> outputPaths = <String>{
+      isolateSnapshotData,
+      isolateSnapshotInstructions,
+    };
+
+    // There are a couple special cases below where we create a snapshot
+    // with only the data section, which only contains interpreted code.
+    bool supportsAppJit = true;
+
+    if (platform == TargetPlatform.android_x64 &&
+        getCurrentHostPlatform() == HostPlatform.windows_x64) {
+      supportsAppJit = false;
+      printStatus('Android x64 dynamic build on Windows x64 will use purely interpreted '
+                  'code for now (see  https://github.com/flutter/flutter/issues/17489).');
+    }
+
+    if (platform == TargetPlatform.android_x86) {
+      supportsAppJit = false;
+      printStatus('Android x86 dynamic build will use purely interpreted code for now. '
+                  'To optimize performance, consider using --target-platform=android-x64.');
+    }
+
     genSnapshotArgs.addAll(<String>[
-      '--snapshot_kind=core-jit',
-      '--vm_snapshot_data=$vmSnapshotData',
+      '--snapshot_kind=${supportsAppJit ? 'app-jit' : 'app'}',
+      '--load_compilation_trace=$compilationTraceFilePath',
+      '--load_vm_snapshot_data=$engineVmSnapshotData',
+      '--load_isolate_snapshot_data=$engineIsolateSnapshotData',
       '--isolate_snapshot_data=$isolateSnapshotData',
-      '--vm_snapshot_instructions=$vmSnapshotInstructions',
-      '--isolate_snapshot_instructions=$isolateSnapshotInstructions',
-      '--load_compilation_trace=trace.txt',
     ]);
+
+    genSnapshotArgs.add('--isolate_snapshot_instructions=$isolateSnapshotInstructions');
 
     if (platform == TargetPlatform.android_arm) {
       // Use softfp for Android armv7 devices.
-      // TODO(cbracken) eliminate this when we fix https://github.com/flutter/flutter/issues/17489
+      // TODO(cbracken): eliminate this when we fix https://github.com/flutter/flutter/issues/17489
       genSnapshotArgs.add('--no-sim-use-hardfp');
 
       // Not supported by the Pixel in 32-bit mode.
@@ -488,27 +437,26 @@ class CoreJITSnapshotter {
     }
 
     // If inputs and outputs have not changed since last run, skip the build.
-    final Fingerprinter fingerprinter = new Fingerprinter(
+    final Fingerprinter fingerprinter = Fingerprinter(
       fingerprintPath: '$depfilePath.fingerprint',
-      paths: <String>[mainPath]..addAll(inputPaths)..addAll(outputPaths),
+      paths: <String>[mainPath, ...inputPaths, ...outputPaths],
       properties: <String, String>{
         'buildMode': buildMode.toString(),
         'targetPlatform': platform.toString(),
         'entryPoint': mainPath,
         'extraGenSnapshotOptions': extraGenSnapshotOptions.join(' '),
       },
-      depfilePaths: <String>[depfilePath],
+      depfilePaths: <String>[],
     );
-    if (await fingerprinter.doesFingerprintMatch()) {
-      printTrace('Skipping Core JIT snapshot build. Fingerprint match.');
-      return 0;
-    }
+    // TODO(jonahwilliams): re-enable once this can be proved correct.
+    // if (await fingerprinter.doesFingerprintMatch()) {
+    //   printTrace('Skipping JIT snapshot build. Fingerprint match.');
+    //   return 0;
+    // }
 
-    final SnapshotType snapshotType = new SnapshotType(platform, buildMode);
+    final SnapshotType snapshotType = SnapshotType(platform, buildMode);
     final int genSnapshotExitCode = await genSnapshot.run(
       snapshotType: snapshotType,
-      packagesPath: packagesPath,
-      depfilePath: depfilePath,
       additionalArgs: genSnapshotArgs,
     );
     if (genSnapshotExitCode != 0) {
@@ -519,17 +467,19 @@ class CoreJITSnapshotter {
     // Write path to gen_snapshot, since snapshots have to be re-generated when we roll
     // the Dart SDK.
     final String genSnapshotPath = GenSnapshot.getSnapshotterPath(snapshotType);
-    await outputDir.childFile('gen_snapshot.d').writeAsString('snapshot.d: $genSnapshotPath\n');
+    await outputDir.childFile('gen_snapshot.d').writeAsString('gen_snapshot.d: $genSnapshotPath\n');
 
     // Compute and record build fingerprint.
     await fingerprinter.writeFingerprint();
     return 0;
   }
 
-  bool _isValidCoreJitPlatform(TargetPlatform platform) {
+  bool _isValidJitPlatform(TargetPlatform platform) {
     return const <TargetPlatform>[
       TargetPlatform.android_arm,
       TargetPlatform.android_arm64,
+      TargetPlatform.android_x86,
+      TargetPlatform.android_x64,
     ].contains(platform);
   }
 }

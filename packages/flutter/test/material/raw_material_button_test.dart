@@ -1,3 +1,8 @@
+// Copyright 2018 The Chromium Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,14 +14,19 @@ void main() {
   testWidgets('materialTapTargetSize.padded expands hit test area', (WidgetTester tester) async {
     int pressed = 0;
 
-    await tester.pumpWidget(new RawMaterialButton(
-      onPressed: () {
-        pressed++;
-      },
-      constraints: new BoxConstraints.tight(const Size(10.0, 10.0)),
-      materialTapTargetSize: MaterialTapTargetSize.padded,
-      child: const Text('+', textDirection: TextDirection.ltr),
-    ));
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: RawMaterialButton(
+          onPressed: () {
+            pressed++;
+          },
+          constraints: BoxConstraints.tight(const Size(10.0, 10.0)),
+          materialTapTargetSize: MaterialTapTargetSize.padded,
+          child: const Text('+'),
+        ),
+      )
+    );
 
     await tester.tapAt(const Offset(40.0, 400.0));
 
@@ -24,22 +34,25 @@ void main() {
   });
 
   testWidgets('materialTapTargetSize.padded expands semantics area', (WidgetTester tester) async {
-    final SemanticsTester semantics = new SemanticsTester(tester);
+    final SemanticsTester semantics = SemanticsTester(tester);
     await tester.pumpWidget(
-      new Center(
-        child: new RawMaterialButton(
-          onPressed: () {},
-          constraints: new BoxConstraints.tight(const Size(10.0, 10.0)),
-          materialTapTargetSize: MaterialTapTargetSize.padded,
-          child: const Text('+', textDirection: TextDirection.ltr),
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: Center(
+          child: RawMaterialButton(
+            onPressed: () { },
+            constraints: BoxConstraints.tight(const Size(10.0, 10.0)),
+            materialTapTargetSize: MaterialTapTargetSize.padded,
+            child: const Text('+'),
+          ),
         ),
       ),
     );
 
     expect(semantics, hasSemantics(
-      new TestSemantics.root(
+      TestSemantics.root(
         children: <TestSemantics>[
-        new TestSemantics(
+        TestSemantics(
           id: 1,
           flags: <SemanticsFlag>[
             SemanticsFlag.isButton,
@@ -51,7 +64,7 @@ void main() {
           ],
           label: '+',
           textDirection: TextDirection.ltr,
-          rect: Rect.fromLTRB(0.0, 0.0, 48.0, 48.0),
+          rect: const Rect.fromLTRB(0.0, 0.0, 48.0, 48.0),
           children: <TestSemantics>[],
         ),
       ]
@@ -61,19 +74,22 @@ void main() {
   });
 
   testWidgets('Ink splash from center tap originates in correct location', (WidgetTester tester) async {
-    const Color highlightColor = const Color(0xAAFF0000);
-    const Color splashColor = const Color(0xAA0000FF);
-    const Color fillColor = const Color(0xFFEF5350);
+    const Color highlightColor = Color(0xAAFF0000);
+    const Color splashColor = Color(0xAA0000FF);
+    const Color fillColor = Color(0xFFEF5350);
 
     await tester.pumpWidget(
-      new Center(
-        child: new RawMaterialButton(
-          materialTapTargetSize: MaterialTapTargetSize.padded,
-          onPressed: () {},
-          fillColor: fillColor,
-          highlightColor: highlightColor,
-          splashColor: splashColor,
-          child: const SizedBox(),
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: Center(
+          child: RawMaterialButton(
+            materialTapTargetSize: MaterialTapTargetSize.padded,
+            onPressed: () { },
+            fillColor: fillColor,
+            highlightColor: highlightColor,
+            splashColor: splashColor,
+            child: const SizedBox(),
+          ),
         ),
       ),
     );
@@ -90,19 +106,22 @@ void main() {
   });
 
   testWidgets('Ink splash from tap above material originates in correct location', (WidgetTester tester) async {
-    const Color highlightColor = const Color(0xAAFF0000);
-    const Color splashColor = const Color(0xAA0000FF);
-    const Color fillColor = const Color(0xFFEF5350);
+    const Color highlightColor = Color(0xAAFF0000);
+    const Color splashColor = Color(0xAA0000FF);
+    const Color fillColor = Color(0xFFEF5350);
 
     await tester.pumpWidget(
-      new Center(
-        child: new RawMaterialButton(
-          materialTapTargetSize: MaterialTapTargetSize.padded,
-          onPressed: () {},
-          fillColor: fillColor,
-          highlightColor: highlightColor,
-          splashColor: splashColor,
-          child: const SizedBox(),
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: Center(
+          child: RawMaterialButton(
+            materialTapTargetSize: MaterialTapTargetSize.padded,
+            onPressed: () { },
+            fillColor: fillColor,
+            highlightColor: highlightColor,
+            splashColor: splashColor,
+            child: const SizedBox(),
+          ),
         ),
       ),
     );
@@ -119,23 +138,23 @@ void main() {
 
   testWidgets('off-center child is hit testable', (WidgetTester tester) async {
     await tester.pumpWidget(
-      new MaterialApp(
-        home: new Column(
+      MaterialApp(
+        home: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: <Widget>[
-            new RawMaterialButton(
+            RawMaterialButton(
             materialTapTargetSize: MaterialTapTargetSize.padded,
-            onPressed: () {},
-            child: new Container(
+            onPressed: () { },
+            child: Container(
               width: 400.0,
               height: 400.0,
-              child: new Column(
+              child: Column(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: const <Widget>[
-                  const SizedBox(
+                  SizedBox(
                     height: 50.0,
                     width: 400.0,
-                    child: const Text('Material'),
+                    child: Text('Material'),
                   ),
                 ],
               ),
@@ -148,19 +167,19 @@ void main() {
   });
 
   testWidgets('smaller child is hit testable', (WidgetTester tester) async {
-    const Key key = const Key('test');
+    const Key key = Key('test');
     await tester.pumpWidget(
-      new MaterialApp(
-        home: new Column(
+      MaterialApp(
+        home: Column(
           children: <Widget>[
-            new RawMaterialButton(
+            RawMaterialButton(
               materialTapTargetSize: MaterialTapTargetSize.padded,
-              onPressed: () {},
-              child: new SizedBox(
+              onPressed: () { },
+              child: SizedBox(
                 key: key,
                 width: 8.0,
                 height: 8.0,
-                child: new Container(
+                child: Container(
                   color: const Color(0xFFAABBCC),
                 ),
               ),
@@ -171,23 +190,80 @@ void main() {
     expect(find.byKey(key).hitTestable(), findsOneWidget);
   });
 
-  testWidgets('RawMaterialButton can be expanded by parent constraints', (WidgetTester tester) async {
-    const Key key = const Key('test');
+  testWidgets('$RawMaterialButton can be expanded by parent constraints', (WidgetTester tester) async {
+    const Key key = Key('test');
     await tester.pumpWidget(
-      new MaterialApp(
-        home: new Column(
+      MaterialApp(
+        home: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            new RawMaterialButton(
+            RawMaterialButton(
               key: key,
-              onPressed: () {},
+              onPressed: () { },
               child: const SizedBox(),
-            )
+            ),
           ],
         ),
       ),
     );
 
     expect(tester.getSize(find.byKey(key)), const Size(800.0, 48.0));
+  });
+
+  testWidgets('$RawMaterialButton handles focus', (WidgetTester tester) async {
+    final FocusNode focusNode = FocusNode(debugLabel: 'Button Focus');
+    const Key key = Key('test');
+    const Color focusColor = Color(0xff00ff00);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: RawMaterialButton(
+            key: key,
+            focusNode: focusNode,
+            focusColor: focusColor,
+            onPressed: () {},
+            child: Container(width: 100, height: 100, color: const Color(0xffff0000)),
+          ),
+        ),
+      ),
+    );
+    final RenderBox box = Material.of(tester.element(find.byType(InkWell))) as dynamic;
+    expect(box, isNot(paints..rect(color: focusColor)));
+
+    focusNode.requestFocus();
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+
+    expect(box, paints..rect(color: focusColor));
+  });
+
+  testWidgets('$RawMaterialButton handles hover', (WidgetTester tester) async {
+    const Key key = Key('test');
+    const Color hoverColor = Color(0xff00ff00);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: RawMaterialButton(
+            key: key,
+            hoverColor: hoverColor,
+            hoverElevation: 10.5,
+            onPressed: () {},
+            child: Container(width: 100, height: 100, color: const Color(0xffff0000)),
+          ),
+        ),
+      ),
+    );
+    final RenderBox box = Material.of(tester.element(find.byType(InkWell))) as dynamic;
+    final TestGesture gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer();
+    expect(box, isNot(paints..rect(color: hoverColor)));
+
+    await gesture.moveTo(tester.getCenter(find.byType(RawMaterialButton)));
+    await tester.pumpAndSettle(const Duration(seconds: 1));
+
+    expect(box, paints..rect(color: hoverColor));
+
+    await gesture.removePointer();
   });
 }
